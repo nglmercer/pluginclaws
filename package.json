@@ -1,0 +1,15 @@
+{
+  "name": "pluginclaws",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "bun_plugins": "^1.2.5"
+  }
+}

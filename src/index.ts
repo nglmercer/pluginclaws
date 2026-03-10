@@ -2,28 +2,97 @@ import { PicoClawWebSocket } from "./core/ws";
 import { buildPicoClawUrl } from "./core/utils";
 import { ClientEvents } from "./core/constants";
 import { definePlugin, type PluginContext } from "bun_plugins";
+import { getRegistryPlugin } from "./core/trigger";
+const PicoClawName = 'pico-claw';
+let client: PicoClawWebSocket | null = null;
+// Store event handlers to remove them on reload
+const eventHandlers: Array<{ event: string; handler: (payload: any) => void }> = [];
+// Store the on handler for PicoClawName messages
+let lastmsg = '';
+let onMessageHandler: ((data: any) => void) | null = null;
+export const AI_RESPOND =  "ai_respond";
+async function initialize(context: PluginContext) {
+  if (!context) return;
+
+  const { emit, storage, on, log } = context;
+  
+  // Clean up existing event listeners before re-initializing
+  eventHandlers.forEach(({ event, handler }) => {
+    if (client) {
+      client.off(event, handler);
+    }
+  });
+  eventHandlers.length = 0;
+  
+  // Disconnect existing client if any
+  if (client) {
+    client.disconnect();
+    client = null;
+  }
+
+  const token = await storage.get(PicoClawName) as string | null;
+  const url = buildPicoClawUrl({
+    token: `${typeof token === 'string' ? token : "0dc4bf3f208b1670e9be0eac77bb3279"}`
+  });
+  client = new PicoClawWebSocket(url);
+  await client.connect();
+  // Map all ClientEvents to emit them as plugin events
+  const eventNames = Object.values(ClientEvents) as string[];
+  eventNames.forEach((eventName) => {
+    const handler = (payload: any) => {
+      if (eventName === ClientEvents.MESSAGE_CREATE){
+        log.info(eventName,payload)
+        const result = String(payload.content);
+        if (lastmsg === result)return;
+        lastmsg = result;
+        context?.emit('system', { eventName: 'TTS', data: {message: result} });
+      }
+      emit(`${PicoClawName}:${eventName}`, payload);
+    };
+    client!.on(eventName, handler);
+    eventHandlers.push({ event: eventName, handler });
+  });
+
+  // Listen for incoming messages - reuse existing handler
+  onMessageHandler = (data: any) => {
+    if (typeof data === 'string') {
+      client!.sendText(PicoClawName, data);
+    }
+  };
+  on(PicoClawName, onMessageHandler);
+  const registry = await getRegistryPlugin(context);
+  if (!registry) return;
+  registry.register(AI_RESPOND, async (action, ctx) => {
+    log.info(`[${AI_RESPOND}]`, action, Object.keys(ctx));
+      if (!action.params?.prompt) {
+        log.warn("No prompt provided for AI_RESPOND");
+        return null;
+      }
+      const user = String(action.params.user)
+      const prompt = String(action.params.prompt);
+      client!.sendText(PicoClawName, `user:[${user}] prompt:${prompt}`);
+  });
+}
 
 export default definePlugin({
-  name: 'pico-claw',
+  name: PicoClawName,
   version: '1.0.0',
   async onLoad(context: PluginContext) {
-    const { emit, storage } = context;
-    const token = await storage.get('pico-claw') as string | { token: string };
-    const url = buildPicoClawUrl({
-      token: `${typeof token === 'string' ? token : token.token}`
-    });
-    const client = new PicoClawWebSocket(url);
-
-    // Map all ClientEvents to emit them as plugin events
-    const eventNames = Object.values(ClientEvents) as string[];
-    eventNames.forEach((eventName) => {
-      client.on(eventName, (payload: any) => {
-        emit(eventName, payload);
-      });
-    });
+    await initialize(context);
+  },
+  async onReload(context) {
+    await initialize(context);
   },
   onUnload() {
-    // Cleanup if needed
+    // Clean up event handlers
+    if (client) {
+      eventHandlers.forEach(({ event, handler }) => {
+        client!.off(event, handler);
+      });
+      eventHandlers.length = 0;
+      client.disconnect();
+      client = null;
+    }
   },
 });
 

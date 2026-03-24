@@ -1,5 +1,5 @@
-import { PicoClawWebSocket } from "./core/ws";
-import { buildPicoClawUrl } from "./core/utils";
+import { PicoClawWebSocket, getPicoToken } from "./core/ws";
+import { buildWsUrl,buildApiUrl } from "./core/utils";
 import { ClientEvents } from "./core/constants";
 import { definePlugin, type PluginContext } from "bun_plugins";
 import { getRegistryPlugin } from "./core/trigger";
@@ -11,6 +11,12 @@ const eventHandlers: Array<{ event: string; handler: (payload: any) => void }> =
 let lastmsg = '';
 let onMessageHandler: ((data: any) => void) | null = null;
 export const AI_RESPOND =  "ai_respond";
+const sessionId = randomUUID();  
+const options = {
+  port: 18800,
+  token: '',
+  sessionId: sessionId
+};
 async function initialize(context: PluginContext) {
   if (!context) return;
 
@@ -29,12 +35,25 @@ async function initialize(context: PluginContext) {
     client.disconnect();
     client = null;
   }
-
-  const token = await storage.get(PicoClawName) as string | null;
-  const url = buildPicoClawUrl({
-    token: `${typeof token === 'string' ? token : "0dc4bf3f208b1670e9be0eac77bb3279"}`
-  });
-  client = new PicoClawWebSocket(url);
+  const httpUrl = buildApiUrl(options);
+  const { token, enabled } = await getPicoToken(httpUrl);  
+    
+  if (!enabled) {  
+    console.error('Pico channel is not enabled');  
+    return;  
+  }
+  if (token) {
+    options.token = token;
+  } else {
+    const gettoken = await storage.get(PicoClawName) as string | null;
+    if (gettoken) {
+      options.token = gettoken;
+    }
+  }
+  // Generar session ID único  
+  const wsUrl = buildWsUrl(options);
+  const protocols = [`token.${options.token}`];  
+  client = new PicoClawWebSocket(wsUrl, protocols);
   await client.connect();
   // Map all ClientEvents to emit them as plugin events
   const eventNames = Object.values(ClientEvents) as string[];
@@ -73,15 +92,23 @@ async function initialize(context: PluginContext) {
       client!.sendText(PicoClawName, `user:[${user}] prompt:${prompt}`);
   });
 }
-
+const err_msg = 'Error initializing PicoClaw plugin:';
 export default definePlugin({
   name: PicoClawName,
   version: '1.0.0',
   async onLoad(context: PluginContext) {
-    await initialize(context);
+    try {
+      await initialize(context);
+    } catch (error) {
+      console.error(err_msg, error);
+    }
   },
-  async onReload(context) {
-    await initialize(context);
+  async onReload(context: PluginContext) {
+    try {
+      await initialize(context);
+    } catch (error) {
+      console.error(err_msg, error);
+    }
   },
   onUnload() {
     // Clean up event handlers
@@ -95,27 +122,41 @@ export default definePlugin({
     }
   },
 });
-
-async function main() {
-  const url = buildPicoClawUrl({
-    token: '0dc4bf3f208b1670e9be0eac77bb3279',
-    sessionId: 'baa1e0d4-f4ff-4af0-9c77-4af5e2674443de'
+function randomUUID() {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+    var r = Math.random() * 16 | 0,
+        v = c == 'x' ? r : (r & 0x3 | 0x8);
+    return v.toString(16);
   });
-  const client = new PicoClawWebSocket(url);
+}
+async function main() {
+  const httpUrl = buildApiUrl(options);
+  const { token, ws_url, enabled } = await getPicoToken(httpUrl);  
+    
+  if (!enabled) {  
+    console.error('Pico channel is not enabled');  
+    return;  
+  }
+  options.token = token;
+  // Generar session ID único  
+  const wsUrl = buildWsUrl(options);
+  const protocols = [`token.${token}`];  
+  console.log(`Pico token: ${token}, ws_url: ${ws_url}`);
+  const client = new PicoClawWebSocket(wsUrl, protocols);
 
   // 1. Configure the "Listeners" BEFORE making requests
   client.on(ClientEvents.CONNECTED, () => console.log('✅ Connected to PicoClaw'));
   client.on(ClientEvents.DISCONNECTED, () => console.log('❌ Disconnected'));
 
-  client.on(ClientEvents.TYPING_START, () => console.log('✍️  AI is typing...'));
-  client.on(ClientEvents.TYPING_STOP, () => console.log('🛑 AI stopped typing'));
+  client.on(ClientEvents.TYPING_START, () => console.log('Thinking...'));
+  client.on(ClientEvents.TYPING_STOP, () => console.log('Stopped thinking'));
 
   client.on(ClientEvents.MESSAGE_CREATE, (payload: any) => {
     console.log('\n💬 AI message received:');
     console.log(payload.content);
   });
 
-  client.on(ClientEvents.ERROR, (err: any) => console.error('⚠️  Error:', err));
+  client.on(ClientEvents.ERROR, (err) => console.error('⚠️  Error:', err));
 
   try {
     // 2. Connect
@@ -129,7 +170,7 @@ async function main() {
     // Ping and connection maintenance are now handled automatically by the class.
 
   } catch (error) {
-    console.error('Critical error connecting:', error);
+    console.error(err_msg, error);
   }
 }
 

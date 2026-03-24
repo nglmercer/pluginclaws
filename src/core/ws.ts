@@ -21,7 +21,13 @@ export interface WSMessage {
 }
 
 type EventHandler = (payload: any) => void;
-
+export async function getPicoToken(URL:string = 'http://127.0.0.1:18800/api/pico/token'): Promise<{ token: string; ws_url: string; enabled: boolean }> {  
+  const response = await fetch(URL);  
+  if (!response.ok) {  
+    throw new Error('Failed to get Pico token');  
+  }  
+  return await response.json() as { token: string; ws_url: string; enabled: boolean };  
+}  
 export class PicoClawWebSocket {
   private ws: WebSocket | null = null;
   private messageId = 0;
@@ -37,13 +43,13 @@ export class PicoClawWebSocket {
   private eventListeners = new Map<string, Set<EventHandler>>();
   private pingInterval: ReturnType<typeof setInterval> | null = null;
 
-  constructor(private url: string) {}
+  constructor(private url: string, private protocols?: string | string[]) {}
 
   // --- Connection Management ---
   
   connect(): Promise<void> {
     return new Promise((resolve, reject) => {
-      this.ws = new WebSocket(this.url);
+      this.ws = new WebSocket(this.url, this.protocols);
 
       this.ws.onopen = () => {
         this.startHeartbeat();
@@ -147,7 +153,7 @@ export class PicoClawWebSocket {
   }
 
   /** Send a message and wait for a response containing the same ID (RPC) */
-  private requestFromServer(type: string, payload: any = {}, timeoutMs = DEFAULT_CONFIG.DEFAULT_TIMEOUT_MS): Promise<any> {
+/*   private requestFromServer(type: string, payload: any = {}, timeoutMs = DEFAULT_CONFIG.DEFAULT_TIMEOUT_MS): Promise<any> {
     return new Promise((resolve, reject) => {
       try {
         const id = (++this.messageId).toString();
@@ -164,7 +170,7 @@ export class PicoClawWebSocket {
         reject(error);
       }
     });
-  }
+  } */
 
   // --- Public Client API ---
 

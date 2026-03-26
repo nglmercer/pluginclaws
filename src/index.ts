@@ -1,7 +1,7 @@
 import { PicoClawWebSocket, getPicoToken } from "./core/ws";
 import { buildWsUrl,buildApiUrl } from "./core/utils";
 import { ClientEvents } from "./core/constants";
-import { definePlugin, type PluginContext } from "bun_plugins";
+import { definePlugin, type PluginContext,type IPlugin } from "bun_plugins";
 import { getRegistryPlugin } from "./core/trigger";
 const PicoClawName = 'pico-claw';
 let client: PicoClawWebSocket | null = null;
@@ -35,7 +35,8 @@ async function initialize(context: PluginContext) {
     client.disconnect();
     client = null;
   }
-  const httpUrl = buildApiUrl(options);
+  const getOptions = await storage.get(PicoClawName) as typeof options | null;
+  const httpUrl = buildApiUrl({...getOptions, ...options});
   const { token, enabled } = await getPicoToken(httpUrl);  
     
   if (!enabled) {  
@@ -45,11 +46,11 @@ async function initialize(context: PluginContext) {
   if (token) {
     options.token = token;
   } else {
-    const gettoken = await storage.get(PicoClawName) as string | null;
-    if (gettoken) {
-      options.token = gettoken;
+    if (getOptions) {
+      options.token = getOptions.token;
     }
   }
+  await storage.set(PicoClawName, options);
   // Generar session ID único  
   const wsUrl = buildWsUrl(options);
   const protocols = [`token.${options.token}`];  
@@ -73,9 +74,11 @@ async function initialize(context: PluginContext) {
   });
 
   // Listen for incoming messages - reuse existing handler
-  onMessageHandler = (data: any) => {
+  onMessageHandler = (data: string | { content: string }) => {
     if (typeof data === 'string') {
       client!.sendText(PicoClawName, data);
+    } else {
+      client!.sendText(PicoClawName, data.content);
     }
   };
   on(PicoClawName, onMessageHandler);
@@ -91,25 +94,30 @@ async function initialize(context: PluginContext) {
       const prompt = String(action.params.prompt);
       client!.sendText(PicoClawName, `user:[${user}] prompt:${prompt}`);
   });
+  client.on(ClientEvents.MESSAGE_CREATE, (payload: string | { content: string }) => {
+    const message = typeof payload === 'string' ? payload : payload.content;
+    context.emit('system', { eventName: 'TTS', data: {message} });
+  });
 }
 const err_msg = 'Error initializing PicoClaw plugin:';
-export default definePlugin({
-  name: PicoClawName,
-  version: '1.0.0',
+export class clawProvider implements IPlugin{
+  name: string = PicoClawName;
+  version: string = '1.0.0';
+  description: string = 'PicoClaw plugin for response ai';
   async onLoad(context: PluginContext) {
     try {
       await initialize(context);
     } catch (error) {
       console.error(err_msg, error);
     }
-  },
+  }
   async onReload(context: PluginContext) {
     try {
       await initialize(context);
     } catch (error) {
       console.error(err_msg, error);
     }
-  },
+  }
   onUnload() {
     // Clean up event handlers
     if (client) {
@@ -120,8 +128,8 @@ export default definePlugin({
       client.disconnect();
       client = null;
     }
-  },
-});
+  }
+};
 function randomUUID() {
   return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
     var r = Math.random() * 16 | 0,

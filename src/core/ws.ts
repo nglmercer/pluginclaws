@@ -21,21 +21,74 @@ export interface WSMessage {
 }
 
 type EventHandler = (payload: any) => void;
+//  URL: string = "http://127.0.0.1:18800/api/pico/token",
+
+const defaultBASE_URL = "http://127.0.0.1:18800";
+export interface OAuthLoginResponse {  
+  status: string  
+  provider: string  
+  method: string  
+  flow_id?: string  
+  auth_url?: string  
+  user_code?: string  
+  verify_url?: string  
+  interval?: number  
+  expires_at?: string  
+  token?: string
+}
+async function request<T>(path: string, options?: RequestInit, baseUrl: string = defaultBASE_URL): Promise<T> {  
+  const res = await fetch(`${baseUrl}${path}`, options)  
+  console.log({path, baseUrl}, res)
+  if (!res.ok) {  
+    const message = await res.text()  
+    throw new Error(message || `API error: ${res.status} ${res.statusText}`)  
+  }  
+  return res.json() as Promise<T>  
+}
+//http://localhost:18800/api/auth/login
+
+export async function loginAuth(  
+  payload: {token:string},  
+  baseUrl: string = defaultBASE_URL
+): Promise<{ data: {ok: boolean}, cookie?: string | null }> {  
+  const path = "/api/auth/login"
+  const res = await fetch(`${baseUrl}${path}`, {  
+    method: "POST",  
+    headers: { "Content-Type": "application/json" },  
+    body: JSON.stringify(payload),  
+  });
+  if (!res.ok) {  
+    const message = await res.text()  
+    throw new Error(message || `API error: ${res.status} ${res.statusText}`)  
+  }
+  const cookie = res.headers.get("set-cookie");
+  return { 
+    data: {ok: true}, 
+    cookie: cookie ? cookie.split(';')[0] : null 
+  };
+}
+// allow with token or without token
 export async function getPicoToken(
-  URL: string = "http://127.0.0.1:18800/api/pico/token",
-): Promise<{ token: string; ws_url: string; enabled: boolean }> {
+  baseUrl: string = defaultBASE_URL,
+  options: { cookie?: string | null }
+): Promise<{ sessionToken: string; ws_url: string; enabled: boolean }> {
   try {
-    const response = await fetch(URL);
-    if (!response.ok) {
-      throw new Error("Failed to get Pico token");
+    const path = "/api/pico/token"
+    const fetchOptions: RequestInit = {};
+    if (options.cookie) {
+      fetchOptions.headers = { "Cookie": options.cookie } as Record<string, string>;
     }
-    return (await response.json()) as {
+    console.log({path, baseUrl})
+    const res = await fetch(`${baseUrl}${path}`, fetchOptions);
+    if (!res.ok) throw new Error("Unauthorized");
+    const json = await res.json() as {
       token: string;
       ws_url: string;
       enabled: boolean;
     };
+    return { sessionToken: json.token, ws_url: json.ws_url, enabled: json.enabled };
   } catch {
-    return { token: "set you token", ws_url: "", enabled: false };
+    return { sessionToken: "", ws_url: "", enabled: false };
   }
 }
 export class PicoClawWebSocket {
@@ -59,6 +112,7 @@ export class PicoClawWebSocket {
   constructor(
     private url: string,
     private protocols?: string | string[],
+    private options?: { headers?: Record<string, string> }
   ) {}
 
   get isConnected(): boolean {
@@ -69,7 +123,8 @@ export class PicoClawWebSocket {
 
   connect(): Promise<void> {
     return new Promise((resolve, reject) => {
-      this.ws = new WebSocket(this.url, this.protocols);
+      // @ts-ignore - Bun/Node specific WebSocket arguments
+      this.ws = new WebSocket(this.url, this.protocols, this.options);
 
       this.ws.onopen = () => {
         this.startHeartbeat();

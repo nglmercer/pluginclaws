@@ -1,5 +1,5 @@
-import { PicoClawWebSocket, getPicoToken } from "./core/ws";
-import { buildWsUrl, buildApiUrl } from "./core/utils";
+import { PicoClawWebSocket, getPicoToken, loginAuth } from "./core/ws";
+import { buildWsUrl } from "./core/utils";
 import { ClientEvents } from "./core/constants";
 import { definePlugin, type PluginContext, type IPlugin } from "bun_plugins";
 import { getRegistryPlugin } from "./core/trigger";
@@ -15,8 +15,10 @@ export const AI_RESPOND = "ai_respond";
 const sessionId = randomUUID();
 const options = {
   port: 18800,
-  token: "",
+  loginToken: "1234",
+  sessionToken: "",
   sessionId: sessionId,
+  cookie: "",
 };
 async function ensurePicoConnection(context: PluginContext): Promise<boolean> {
   if (client?.isConnected) return true;
@@ -33,26 +35,51 @@ async function ensurePicoConnection(context: PluginContext): Promise<boolean> {
   }
 
   const getOptions = (await storage.get(PicoClawName)) as typeof options | null;
-  const httpUrl = buildApiUrl({ ...getOptions, ...options });
-  const { token, enabled } = await getPicoToken(httpUrl);
+  const baseUrl = `http://127.0.0.1:${options.port}`;
+  const httpUrl = baseUrl;
+  let loginToken = getOptions?.loginToken || options.loginToken || "";
+  let currentCookie = getOptions?.cookie || options.cookie || "";
   
-  if (typeof token === "string" && token.length > 0) {
-    options.token = token;
-  } else if (typeof getOptions?.token === "string" && getOptions.token.length > 0) {
-    options.token = getOptions.token;
+  let { sessionToken, enabled } = await getPicoToken(httpUrl, { cookie: currentCookie });
+
+  if (!sessionToken && loginToken) {
+    log.info("No session token obtained, attempting loginAuth...");
+    try {
+      const oauthRes = await loginAuth({
+        token: loginToken
+      }, baseUrl);
+      
+      log.info("loginAuth response (cookie updated):", !!oauthRes.cookie);
+      
+      if (oauthRes.cookie) {
+        currentCookie = oauthRes.cookie;
+      }
+      
+      const retryPico = await getPicoToken(httpUrl, { cookie: currentCookie });
+      sessionToken = retryPico.sessionToken;
+      enabled = retryPico.enabled;
+    } catch (e) {
+      log.error("Failed to login OAuth:", e);
+    }
   }
   
-  const saved = await storage.set(PicoClawName, options);
+  if (typeof loginToken === "string" && loginToken.length > 0) {
+    options.sessionToken = sessionToken;
+  }
+  options.cookie = currentCookie;
   
-  if (!enabled || !options.token) {
-    console.error("Pico channel is not enabled or token not found", saved);
+  await storage.set(PicoClawName, options);
+  
+  if (!enabled || !sessionToken) {
+    console.error("Pico channel is not enabled or session token not found", options);
     return false;
   }
 
   try {
     const wsUrl = buildWsUrl(options);
-    const protocols = [`token.${options.token}`];
-    client = new PicoClawWebSocket(wsUrl, protocols);
+    const protocols = [`token.${sessionToken}`];
+    const wsOptions = options.cookie ? { headers: { Cookie: options.cookie } } : undefined;
+    client = new PicoClawWebSocket(wsUrl, protocols, wsOptions);
     await client.connect();
 
     const eventNames = Object.values(ClientEvents) as string[];
@@ -158,19 +185,36 @@ function randomUUID() {
   });
 }
 async function main() {
-  const httpUrl = buildApiUrl(options);
-  const { token, ws_url, enabled } = await getPicoToken(httpUrl);
+  let loginToken = options.loginToken;
+  const baseUrl = `http://127.0.0.1:${options.port}`;
+  const httpUrl = baseUrl;
+  
+  console.log("Starting main, loginToken:", loginToken);
+  
+  let oauthRes = await loginAuth({ token: loginToken }, baseUrl);
+  const cookie = oauthRes.cookie || "";
+  console.log("Retrieved cookie:", cookie);
+
+  let { sessionToken, ws_url, enabled } = await getPicoToken(httpUrl, { cookie });
+  console.log("Pico Token Session:", sessionToken, "ws_url:", ws_url, "enabled:", enabled);
+
+  if (!sessionToken) {
+    console.log("No session token, aborting.");
+    return;
+  }
 
   if (!enabled) {
     console.error("Pico channel is not enabled");
     return;
   }
-  options.token = token;
+  options.sessionToken = sessionToken;
+  
   // Generar session ID único
   const wsUrl = buildWsUrl(options);
-  const protocols = [`token.${token}`];
-  console.log(`Pico token: ${token}, ws_url: ${ws_url}`);
-  const client = new PicoClawWebSocket(wsUrl, protocols);
+  const protocols = [`token.${sessionToken}`];
+  console.log(`Pico session token: ${sessionToken}, ws_url: ${ws_url}`);
+  const wsOptions = cookie ? { headers: { Cookie: cookie } } : undefined;
+  const client = new PicoClawWebSocket(wsUrl, protocols, wsOptions);
 
   // 1. Configure the "Listeners" BEFORE making requests
   client.on(ClientEvents.CONNECTED, () =>
@@ -202,7 +246,12 @@ async function main() {
     console.error(err_msg, error);
   }
 }
-
+/*
+// recommend change in pico
+      "enabled": true,  
+      "token": "tu-token",  
+      "allow_token_query": false  
+*/
 if (import.meta.main) {
   main();
 }

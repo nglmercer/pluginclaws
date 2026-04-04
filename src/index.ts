@@ -35,7 +35,7 @@ async function ensurePicoConnection(context: PluginContext): Promise<boolean> {
   }
 
   const getOptions = (await storage.get(PicoClawName)) as typeof options | null;
-  const baseUrl = `http://127.0.0.1:${options.port}`;
+  const baseUrl = `http://localhost:${options.port}`;
   const httpUrl = baseUrl;
   let loginToken = getOptions?.loginToken || options.loginToken || "";
   let currentCookie = getOptions?.cookie || options.cookie || "";
@@ -186,7 +186,7 @@ function randomUUID() {
 }
 async function main() {
   let loginToken = options.loginToken;
-  const baseUrl = `http://127.0.0.1:${options.port}`;
+  const baseUrl = `http://localhost:${options.port}`;
   const httpUrl = baseUrl;
   
   console.log("Starting main, loginToken:", loginToken);
@@ -210,6 +210,7 @@ async function main() {
   options.sessionToken = sessionToken;
   
   // Generar session ID único
+  //options.port = 18790;
   const wsUrl = buildWsUrl(options);
   const protocols = [`token.${sessionToken}`];
   console.log(`Pico session token: ${sessionToken}, ws_url: ${ws_url}`);

@@ -11,7 +11,7 @@ import {
 export interface PicoClawConfig {  
   sessionToken?: string;  
   sessionId?: string;  
-  host?: string;    // Default: '127.0.0.1'  
+  host?: string;    // Default: 'localhost'  
   port?: number;    // Default: 18790 for WS, 18800 for HTTP  
   path?: string;    // Default: '/pico/ws' for WS, '/api/pico/token' for HTTP  
   secure?: boolean; // Default: false (ws:// vs wss://)  

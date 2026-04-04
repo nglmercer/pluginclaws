@@ -2,12 +2,20 @@
 // PicoClaw WebSocket Client
 // ==========================================
 
+import WsWebSocket from "ws";
 import {
   ClientEvents,
   MessageTypes,
   DEFAULT_CONFIG,
-  ReadyState,
 } from "./constants";
+
+// Use ws library's readyState constants
+const ReadyState = {
+  CONNECTING: WsWebSocket.CONNECTING,
+  OPEN: WsWebSocket.OPEN,
+  CLOSING: WsWebSocket.CLOSING,
+  CLOSED: WsWebSocket.CLOSED,
+} as const;
 
 // ==========================================
 // Types and Interfaces
@@ -23,7 +31,7 @@ export interface WSMessage {
 type EventHandler = (payload: any) => void;
 //  URL: string = "http://127.0.0.1:18800/api/pico/token",
 
-const defaultBASE_URL = "http://127.0.0.1:18800";
+const defaultBASE_URL = "http://localhost:18800";
 export interface OAuthLoginResponse {  
   status: string  
   provider: string  
@@ -92,7 +100,7 @@ export async function getPicoToken(
   }
 }
 export class PicoClawWebSocket {
-  private ws: WebSocket | null = null;
+  private ws: WsWebSocket | null = null;
   private messageId = 0;
 
   // For messages that DO expect a direct response with ID
@@ -123,34 +131,35 @@ export class PicoClawWebSocket {
 
   connect(): Promise<void> {
     return new Promise((resolve, reject) => {
-      // @ts-ignore - Bun/Node specific WebSocket arguments
-      this.ws = new WebSocket(this.url, this.protocols, this.options);
+      this.ws = new WsWebSocket(this.url, this.protocols, {
+        headers: this.options?.headers,
+      });
 
-      this.ws.onopen = () => {
+      this.ws.on("open", () => {
         this.startHeartbeat();
         this.emitLocal("connected", null);
         resolve();
-      };
+      });
 
-      this.ws.onerror = (error) => {
+      this.ws.on("error", (error) => {
         this.emitLocal("error", error);
         reject(error);
-      };
+      });
 
-      this.ws.onmessage = (event) => {
+      this.ws.on("message", (data) => {
         try {
-          const message: WSMessage = JSON.parse(event.data);
+          const message: WSMessage = JSON.parse(data.toString());
           this.handleIncomingMessage(message);
         } catch (err) {
           console.error("Error parsing WS message:", err);
         }
-      };
+      });
 
-      this.ws.onclose = () => {
+      this.ws.on("close", () => {
         this.stopHeartbeat();
         this.clearPendingRequests();
         this.emitLocal("disconnected", null);
-      };
+      });
     });
   }
 

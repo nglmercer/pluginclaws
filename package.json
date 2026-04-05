@@ -5,16 +5,18 @@
   "private": true,
   "scripts": {
     "start": "bun run src/index.ts",
-    "build": "bun build ./src/index.ts --outdir=./dist --target=bun"
+    "build": "bun build ./src/index.ts --outdir=./dist --target=bun --entry-naming \"[dir]/pluginclaws.[ext]\""
   },
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "@types/ws": "^8.18.1"
   },
   "peerDependencies": {
     "typescript": "^5"
   },
   "dependencies": {
     "bun_plugins": "^1.2.5",
-    "trigger_system": "^1.2.1"
+    "trigger_system": "^1.2.1",
+    "ws": "^8.20.0"
   }
 }

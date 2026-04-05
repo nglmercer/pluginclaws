@@ -1,179 +1,278 @@
-import { PicoClawWebSocket, getPicoToken } from "./core/ws";
-import { buildWsUrl,buildApiUrl } from "./core/utils";
+import { PicoClawWebSocket, getPicoToken, loginAuth } from "./core/ws";
+import { buildWsUrl } from "./core/utils";
 import { ClientEvents } from "./core/constants";
-import { definePlugin, type PluginContext } from "bun_plugins";
+import { type PluginContext, type IPlugin } from "bun_plugins";
 import { getRegistryPlugin } from "./core/trigger";
-const PicoClawName = 'pico-claw';
-let client: PicoClawWebSocket | null = null;
-// Store event handlers to remove them on reload
-const eventHandlers: Array<{ event: string; handler: (payload: any) => void }> = [];
-// Store the on handler for PicoClawName messages
-let lastmsg = '';
-let onMessageHandler: ((data: any) => void) | null = null;
-export const AI_RESPOND =  "ai_respond";
-const sessionId = randomUUID();  
-const options = {
+
+const PICO_CLAW_NAME = "pico-claw";
+export const AI_RESPOND = "ai_respond";
+
+interface PluginOptions {
+  port: number;
+  loginToken: string;
+  sessionToken: string;
+  sessionId: string;
+  cookie: string;
+}
+
+const DEFAULT_OPTIONS: PluginOptions = {
   port: 18800,
-  token: '',
-  sessionId: sessionId
+  loginToken: "1234",
+  sessionToken: "",
+  sessionId: "",
+  cookie: "",
 };
-async function initialize(context: PluginContext) {
-  if (!context) return;
 
-  const { emit, storage, on, log } = context;
-  
-  // Clean up existing event listeners before re-initializing
-  eventHandlers.forEach(({ event, handler }) => {
-    if (client) {
-      client.off(event, handler);
-    }
-  });
-  eventHandlers.length = 0;
-  
-  // Disconnect existing client if any
-  if (client) {
-    client.disconnect();
-    client = null;
-  }
-  const httpUrl = buildApiUrl(options);
-  const { token, enabled } = await getPicoToken(httpUrl);  
-    
-  if (!enabled) {  
-    console.error('Pico channel is not enabled');  
-    return;  
-  }
-  if (token) {
-    options.token = token;
-  } else {
-    const gettoken = await storage.get(PicoClawName) as string | null;
-    if (gettoken) {
-      options.token = gettoken;
-    }
-  }
-  // Generar session ID único  
-  const wsUrl = buildWsUrl(options);
-  const protocols = [`token.${options.token}`];  
-  client = new PicoClawWebSocket(wsUrl, protocols);
-  await client.connect();
-  // Map all ClientEvents to emit them as plugin events
-  const eventNames = Object.values(ClientEvents) as string[];
-  eventNames.forEach((eventName) => {
-    const handler = (payload: any) => {
-      if (eventName === ClientEvents.MESSAGE_CREATE){
-        log.info(eventName,payload)
-        const result = String(payload.content);
-        if (lastmsg === result)return;
-        lastmsg = result;
-        context?.emit('system', { eventName: 'TTS', data: {message: result} });
-      }
-      emit(`${PicoClawName}:${eventName}`, payload);
-    };
-    client!.on(eventName, handler);
-    eventHandlers.push({ event: eventName, handler });
-  });
+export class PicoClawPlugin implements IPlugin {
+  name = PICO_CLAW_NAME;
+  version = "1.0.0";
+  description = "PicoClaw plugin for AI response integration";
 
-  // Listen for incoming messages - reuse existing handler
-  onMessageHandler = (data: any) => {
-    if (typeof data === 'string') {
-      client!.sendText(PicoClawName, data);
-    }
-  };
-  on(PicoClawName, onMessageHandler);
-  const registry = await getRegistryPlugin(context);
-  if (!registry) return;
-  registry.register(AI_RESPOND, async (action, ctx) => {
-    log.info(`[${AI_RESPOND}]`, action, Object.keys(ctx));
-      if (!action.params?.prompt) {
-        log.warn("No prompt provided for AI_RESPOND");
-        return null;
-      }
-      const user = String(action.params.user)
-      const prompt = String(action.params.prompt);
-      client!.sendText(PicoClawName, `user:[${user}] prompt:${prompt}`);
-  });
-}
-const err_msg = 'Error initializing PicoClaw plugin:';
-export default definePlugin({
-  name: PicoClawName,
-  version: '1.0.0',
+  private client: PicoClawWebSocket | null = null;
+  private eventHandlers: Array<{ event: string; handler: (payload: any) => void }> = [];
+  private lastMsg = "";
+  private options: PluginOptions = { ...DEFAULT_OPTIONS };
+  private context: PluginContext | null = null;
+
   async onLoad(context: PluginContext) {
+    this.context = context;
+    this.options.sessionId = crypto.randomUUID();
     try {
-      await initialize(context);
+      await this.initialize();
     } catch (error) {
-      console.error(err_msg, error);
+      this.context.log.error("Error loading PicoClaw plugin:", error);
     }
-  },
-  async onReload(context: PluginContext) {
-    try {
-      await initialize(context);
-    } catch (error) {
-      console.error(err_msg, error);
-    }
-  },
-  onUnload() {
-    // Clean up event handlers
-    if (client) {
-      eventHandlers.forEach(({ event, handler }) => {
-        client!.off(event, handler);
-      });
-      eventHandlers.length = 0;
-      client.disconnect();
-      client = null;
-    }
-  },
-});
-function randomUUID() {
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
-    var r = Math.random() * 16 | 0,
-        v = c == 'x' ? r : (r & 0x3 | 0x8);
-    return v.toString(16);
-  });
-}
-async function main() {
-  const httpUrl = buildApiUrl(options);
-  const { token, ws_url, enabled } = await getPicoToken(httpUrl);  
-    
-  if (!enabled) {  
-    console.error('Pico channel is not enabled');  
-    return;  
   }
-  options.token = token;
-  // Generar session ID único  
-  const wsUrl = buildWsUrl(options);
-  const protocols = [`token.${token}`];  
-  console.log(`Pico token: ${token}, ws_url: ${ws_url}`);
-  const client = new PicoClawWebSocket(wsUrl, protocols);
 
-  // 1. Configure the "Listeners" BEFORE making requests
-  client.on(ClientEvents.CONNECTED, () => console.log('✅ Connected to PicoClaw'));
-  client.on(ClientEvents.DISCONNECTED, () => console.log('❌ Disconnected'));
+  async onReload(context: PluginContext) {
+    this.context = context;
+    try {
+      await this.initialize();
+    } catch (error) {
+      this.context.log.error("Error reloading PicoClaw plugin:", error);
+    }
+  }
 
-  client.on(ClientEvents.TYPING_START, () => console.log('Thinking...'));
-  client.on(ClientEvents.TYPING_STOP, () => console.log('Stopped thinking'));
+  async onUnload() {
+    this.cleanup();
+    this.context = null;
+  }
 
-  client.on(ClientEvents.MESSAGE_CREATE, (payload: any) => {
-    console.log('\n💬 AI message received:');
-    console.log(payload.content);
-  });
+  private cleanup() {
+    if (this.client) {
+      this.eventHandlers.forEach(({ event, handler }) => {
+        this.client?.off(event, handler);
+      });
+      this.eventHandlers = [];
+      this.client.disconnect();
+      this.client = null;
+    }
+  }
 
-  client.on(ClientEvents.ERROR, (err) => console.error('⚠️  Error:', err));
+  private async initialize() {
+    if (!this.context) return;
 
+    const isConnected = await this.ensureConnection();
+    if (!isConnected) {
+      this.context.log.warn("Initial connection to PicoClaw failed. Will retry on demand.");
+    }
+
+    // Set up message handler for the plugin name
+    this.context.on(PICO_CLAW_NAME, async (data: string | {content: string}) => {
+      const isReady = await this.ensureConnection();
+      if (!isReady || !this.client) return;
+
+      const content = typeof data === "string" ? data : data?.content || "";
+      if (content) {
+        this.client.sendText(PICO_CLAW_NAME, content);
+      }
+    });
+
+    // Register AI_RESPOND action
+    const registryPlugin = await getRegistryPlugin(this.context);
+    if (registryPlugin?.registry) {
+      registryPlugin.registry.register(AI_RESPOND, async (action, ctx) => {
+        this.context?.log.info(`[${AI_RESPOND}]`, action, Object.keys(ctx));
+        
+        if (!action.params?.prompt) {
+          this.context?.log.warn("No prompt provided for AI_RESPOND");
+          return null;
+        }
+
+        const isReady = await this.ensureConnection();
+        if (!isReady || !this.client) {
+          this.context?.log.error("Cannot perform AI_RESPOND: connection not ready");
+          return null;
+        }
+
+        const user = String(action.params.user || "unknown");
+        const prompt = String(action.params.prompt);
+        this.client.sendText(PICO_CLAW_NAME, `user:[${user}] prompt:${prompt}`);
+        return { success: true };
+      });
+    }
+  }
+
+  private async ensureConnection(): Promise<boolean> {
+    if (this.client?.isConnected) return true;
+    if (!this.context) return false;
+
+    const { storage, log } = this.context;
+
+    // Load saved options and merge with defaults
+    const savedOptions = (await storage.get(PICO_CLAW_NAME)) as Partial<PluginOptions> | null;
+    this.options = { 
+      ...DEFAULT_OPTIONS, 
+      ...this.options, // maintain session ID if already set
+      ...savedOptions 
+    };
+
+    if (!this.options.sessionId) {
+      this.options.sessionId = crypto.randomUUID();
+    }
+
+    const baseUrl = `http://localhost:${this.options.port}`;
+    let currentCookie = this.options.cookie;
+    
+    // Attempt to get a session token
+    let { sessionToken, enabled } = await getPicoToken(baseUrl, { cookie: currentCookie });
+
+    // If session token failed and we have a login token, try to authenticate
+    if (!sessionToken && this.options.loginToken) {
+      log.info("No session token, attempting login...");
+      try {
+        const authRes = await loginAuth({ token: this.options.loginToken }, baseUrl);
+        if (authRes.cookie) {
+          currentCookie = authRes.cookie;
+          this.options.cookie = currentCookie;
+          
+          // Retry getting the token with the new cookie
+          const retryRes = await getPicoToken(baseUrl, { cookie: currentCookie });
+          sessionToken = retryRes.sessionToken;
+          enabled = retryRes.enabled;
+        }
+      } catch (e) {
+        log.error("Login failed:", e);
+      }
+    }
+
+    this.options.sessionToken = sessionToken;
+    this.options.cookie = currentCookie;
+    
+    // Persist updated options
+    await storage.set(PICO_CLAW_NAME, this.options);
+
+    if (!enabled || !sessionToken) {
+      log.error("Pico channel not enabled or session token missing", { enabled, hasToken: !!sessionToken });
+      return false;
+    }
+
+    // Connect WebSocket
+    try {
+      this.cleanup(); // Clear any existing problematic client
+
+      const wsUrl = buildWsUrl(this.options);
+      const protocols = [`token.${sessionToken}`];
+      const wsOptions = currentCookie ? { headers: { Cookie: currentCookie } } : undefined;
+      
+      this.client = new PicoClawWebSocket(wsUrl, protocols, wsOptions);
+      await this.client.connect();
+
+      // Set up event listeners
+      const eventNames = Object.values(ClientEvents) as string[];
+      eventNames.forEach((eventName) => {
+        const handler = (payload: string | {content: string}) => {
+          this.handleClientEvent(eventName, payload);
+        };
+        this.client!.on(eventName, handler);
+        this.eventHandlers.push({ event: eventName, handler });
+      });
+
+      log.info("PicoClaw connected successfully");
+      return true;
+    } catch (err) {
+      log.error("Failed to connect to PicoClaw WebSocket", err);
+      this.client = null;
+      return false;
+    }
+  }
+
+  private handleClientEvent(eventName: string, payload: string | {content: string}) {
+    if (!this.context) return;
+
+    if (eventName === ClientEvents.MESSAGE_CREATE) {
+      const content = typeof payload === "string" ? payload : String(payload?.content || "");
+      
+      // Basic deduplication
+      if (this.lastMsg === content) return;
+      this.lastMsg = content;
+
+      this.context.log.info("AI message received", { content });
+      
+      // Emit a system TTS event
+      this.context.emit("system", {
+        eventName: "TTS",
+        data: { message: content },
+      });
+    }
+
+    // Emit the event prefixed with the plugin name
+    this.context.emit(`${PICO_CLAW_NAME}:${eventName}`, payload);
+  }
+}
+
+// Export the provider as the default plugin implementation
+//export const clawProvider = PicoClawPlugin;
+
+/**
+ * Main function for manual testing (bun src/index.ts)
+ */
+async function main() {
+  console.log("--- PicoClaw Manual Test ---");
+  
+  const testOptions: PluginOptions = {
+    ...DEFAULT_OPTIONS,
+    sessionId: crypto.randomUUID(),
+  };
+
+  const baseUrl = `http://localhost:${testOptions.port}`;
+  
   try {
-    // 2. Connect
+    console.log(`Authenticating at ${baseUrl}...`);
+    const authRes = await loginAuth({ token: testOptions.loginToken }, baseUrl);
+    const cookie = authRes.cookie || "";
+    
+    console.log("Fetching session token...");
+    const { sessionToken, ws_url, enabled } = await getPicoToken(baseUrl, { cookie });
+    
+    if (!sessionToken || !enabled) {
+      console.error("Failed to get session token or channel not enabled");
+      return;
+    }
+
+    console.log(`Connecting to WebSocket: ${ws_url}...`);
+    testOptions.sessionToken = sessionToken;
+    const wsUrl = buildWsUrl(testOptions);
+    const protocols = [`token.${sessionToken}`];
+    const wsHeaders = cookie ? { headers: { Cookie: cookie } } : undefined;
+    
+    const client = new PicoClawWebSocket(wsUrl, protocols, wsHeaders);
+
+    client.on(ClientEvents.CONNECTED, () => console.log("✅ Connected!"));
+    client.on(ClientEvents.MESSAGE_CREATE, (p) => console.log("\n💬 AI:", p.content || p));
+    client.on(ClientEvents.ERROR, (e) => console.error("⚠️ Error:", e));
+    client.on(ClientEvents.DISCONNECTED, () => console.log("❌ Disconnected"));
+
     await client.connect();
-
-    // 3. Send the message.
-    // NOTE: We no longer use 'await' here because it's a 'fire-and-forget' event.
-    // The response will come through the 'message.create' event configured above.
-    client.sendText('chat-123', 'What are you doing today!');
-
-    // Ping and connection maintenance are now handled automatically by the class.
+    console.log("Sending test message...");
+    client.sendText("test-session", "Hello! Are you there?");
 
   } catch (error) {
-    console.error(err_msg, error);
+    console.error("Test failed:", error);
   }
 }
 
 if (import.meta.main) {
   main();
 }
+

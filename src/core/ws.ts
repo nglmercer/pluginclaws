@@ -2,12 +2,20 @@
 // PicoClaw WebSocket Client
 // ==========================================
 
+import WsWebSocket from "ws";
 import {
   ClientEvents,
   MessageTypes,
   DEFAULT_CONFIG,
-  ReadyState,
-} from './constants';
+} from "./constants";
+
+// Use ws library's readyState constants
+const ReadyState = {
+  CONNECTING: WsWebSocket.CONNECTING,
+  OPEN: WsWebSocket.OPEN,
+  CLOSING: WsWebSocket.CLOSING,
+  CLOSED: WsWebSocket.CLOSED,
+} as const;
 
 // ==========================================
 // Types and Interfaces
@@ -21,61 +29,137 @@ export interface WSMessage {
 }
 
 type EventHandler = (payload: any) => void;
-export async function getPicoToken(URL:string = 'http://127.0.0.1:18800/api/pico/token'): Promise<{ token: string; ws_url: string; enabled: boolean }> {  
-  const response = await fetch(URL);  
-  if (!response.ok) {  
-    throw new Error('Failed to get Pico token');  
+//  URL: string = "http://127.0.0.1:18800/api/pico/token",
+
+const defaultBASE_URL = "http://localhost:18800";
+export interface OAuthLoginResponse {  
+  status: string  
+  provider: string  
+  method: string  
+  flow_id?: string  
+  auth_url?: string  
+  user_code?: string  
+  verify_url?: string  
+  interval?: number  
+  expires_at?: string  
+  token?: string
+}
+async function request<T>(path: string, options?: RequestInit, baseUrl: string = defaultBASE_URL): Promise<T> {  
+  const res = await fetch(`${baseUrl}${path}`, options)  
+  console.log({path, baseUrl}, res)
+  if (!res.ok) {  
+    const message = await res.text()  
+    throw new Error(message || `API error: ${res.status} ${res.statusText}`)  
   }  
-  return await response.json() as { token: string; ws_url: string; enabled: boolean };  
-}  
+  return res.json() as Promise<T>  
+}
+//http://localhost:18800/api/auth/login
+
+export async function loginAuth(  
+  payload: {token:string},  
+  baseUrl: string = defaultBASE_URL
+): Promise<{ data: {ok: boolean}, cookie?: string | null }> {  
+  const path = "/api/auth/login"
+  const res = await fetch(`${baseUrl}${path}`, {  
+    method: "POST",  
+    headers: { "Content-Type": "application/json" },  
+    body: JSON.stringify(payload),  
+  });
+  if (!res.ok) {  
+    const message = await res.text()  
+    throw new Error(message || `API error: ${res.status} ${res.statusText}`)  
+  }
+  const cookie = res.headers.get("set-cookie");
+  return { 
+    data: {ok: true}, 
+    cookie: cookie ? cookie.split(';')[0] : null 
+  };
+}
+// allow with token or without token
+export async function getPicoToken(
+  baseUrl: string = defaultBASE_URL,
+  options: { cookie?: string | null }
+): Promise<{ sessionToken: string; ws_url: string; enabled: boolean }> {
+  try {
+    const path = "/api/pico/token"
+    const fetchOptions: RequestInit = {};
+    if (options.cookie) {
+      fetchOptions.headers = { "Cookie": options.cookie } as Record<string, string>;
+    }
+    console.log({path, baseUrl})
+    const res = await fetch(`${baseUrl}${path}`, fetchOptions);
+    if (!res.ok) throw new Error("Unauthorized");
+    const json = await res.json() as {
+      token: string;
+      ws_url: string;
+      enabled: boolean;
+    };
+    return { sessionToken: json.token, ws_url: json.ws_url, enabled: json.enabled };
+  } catch {
+    return { sessionToken: "", ws_url: "", enabled: false };
+  }
+}
 export class PicoClawWebSocket {
-  private ws: WebSocket | null = null;
+  private ws: WsWebSocket | null = null;
   private messageId = 0;
-  
+
   // For messages that DO expect a direct response with ID
-  private pendingRequests = new Map<string, {
-    resolve: (value: any) => void;
-    reject: (error: Error) => void;
-    timeout: ReturnType<typeof setTimeout>;
-  }>();
+  private pendingRequests = new Map<
+    string,
+    {
+      resolve: (value: any) => void;
+      reject: (error: Error) => void;
+      timeout: ReturnType<typeof setTimeout>;
+    }
+  >();
 
   // For server events (pub/sub)
   private eventListeners = new Map<string, Set<EventHandler>>();
   private pingInterval: ReturnType<typeof setInterval> | null = null;
 
-  constructor(private url: string, private protocols?: string | string[]) {}
+  constructor(
+    private url: string,
+    private protocols?: string | string[],
+    private options?: { headers?: Record<string, string> }
+  ) {}
+
+  get isConnected(): boolean {
+    return this.ws !== null && this.ws.readyState === ReadyState.OPEN;
+  }
 
   // --- Connection Management ---
-  
+
   connect(): Promise<void> {
     return new Promise((resolve, reject) => {
-      this.ws = new WebSocket(this.url, this.protocols);
+      this.ws = new WsWebSocket(this.url, this.protocols, {
+        headers: this.options?.headers,
+      });
 
-      this.ws.onopen = () => {
+      this.ws.on("open", () => {
         this.startHeartbeat();
-        this.emitLocal('connected', null);
+        this.emitLocal("connected", null);
         resolve();
-      };
+      });
 
-      this.ws.onerror = (error) => {
-        this.emitLocal('error', error);
+      this.ws.on("error", (error) => {
+        this.emitLocal("error", error);
         reject(error);
-      };
+      });
 
-      this.ws.onmessage = (event) => {
+      this.ws.on("message", (data) => {
         try {
-          const message: WSMessage = JSON.parse(event.data);
+          const message: WSMessage = JSON.parse(data.toString());
           this.handleIncomingMessage(message);
         } catch (err) {
-          console.error('Error parsing WS message:', err);
+          console.error("Error parsing WS message:", err);
         }
-      };
+      });
 
-      this.ws.onclose = () => {
+      this.ws.on("close", () => {
         this.stopHeartbeat();
         this.clearPendingRequests();
-        this.emitLocal('disconnected', null);
-      };
+        this.emitLocal("disconnected", null);
+      });
     });
   }
 
@@ -87,7 +171,7 @@ export class PicoClawWebSocket {
   }
 
   // --- Event Management (Pub/Sub) ---
-  
+
   /** Subscribe to a server event (e.g., 'message.create') */
   on(event: string, handler: EventHandler) {
     if (!this.eventListeners.has(event)) {
@@ -107,7 +191,7 @@ export class PicoClawWebSocket {
   private emitLocal(event: string, payload: any) {
     const listeners = this.eventListeners.get(event);
     if (listeners) {
-      listeners.forEach(handler => handler(payload));
+      listeners.forEach((handler) => handler(payload));
     }
   }
 
@@ -123,7 +207,7 @@ export class PicoClawWebSocket {
       this.pendingRequests.delete(id);
 
       if (type === MessageTypes.ERROR) {
-        request.reject(new Error(payload?.message || 'Server error'));
+        request.reject(new Error(payload?.message || "Server error"));
       } else {
         request.resolve({ type, payload });
       }
@@ -139,26 +223,26 @@ export class PicoClawWebSocket {
   /** Send a message without expecting a direct response with ID (Fire and Forget) */
   private emitToServer(type: string, payload: any = {}): void {
     if (!this.ws || this.ws.readyState !== ReadyState.OPEN) {
-      throw new Error('WebSocket is not connected');
+      throw new Error("WebSocket is not connected");
     }
 
     const message: WSMessage = {
       type,
       id: (++this.messageId).toString(),
       timestamp: Date.now(),
-      payload
+      payload,
     };
 
     this.ws.send(JSON.stringify(message));
   }
 
   /** Send a message and wait for a response containing the same ID (RPC) */
-/*   private requestFromServer(type: string, payload: any = {}, timeoutMs = DEFAULT_CONFIG.DEFAULT_TIMEOUT_MS): Promise<any> {
+  /*   private requestFromServer(type: string, payload: any = {}, timeoutMs = DEFAULT_CONFIG.DEFAULT_TIMEOUT_MS): Promise<any> {
     return new Promise((resolve, reject) => {
       try {
         const id = (++this.messageId).toString();
         const message: WSMessage = { type, id, timestamp: Date.now(), payload };
-        
+
         const timeout = setTimeout(() => {
           this.pendingRequests.delete(id);
           reject(new Error(`Timeout of ${timeoutMs}ms waiting for response for ${type}`));
@@ -179,8 +263,16 @@ export class PicoClawWebSocket {
     this.emitToServer(MessageTypes.MESSAGE_SEND, { chat_id: chatId, content });
   }
 
-  sendMedia(chatId: string, mediaType: string, data: string | ArrayBuffer): void {
-    this.emitToServer(MessageTypes.MEDIA_SEND, { chat_id: chatId, media_type: mediaType, data });
+  sendMedia(
+    chatId: string,
+    mediaType: string,
+    data: string | ArrayBuffer,
+  ): void {
+    this.emitToServer(MessageTypes.MEDIA_SEND, {
+      chat_id: chatId,
+      media_type: mediaType,
+      data,
+    });
   }
 
   startTyping(chatId: string): void {
@@ -211,7 +303,7 @@ export class PicoClawWebSocket {
   private clearPendingRequests() {
     this.pendingRequests.forEach(({ timeout, reject }) => {
       clearTimeout(timeout);
-      reject(new Error('Connection closed before receiving response'));
+      reject(new Error("Connection closed before receiving response"));
     });
     this.pendingRequests.clear();
   }

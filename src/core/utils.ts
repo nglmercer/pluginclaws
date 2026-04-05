@@ -9,9 +9,9 @@ import {
 // ==========================================  
   
 export interface PicoClawConfig {  
-  token?: string;  
+  sessionToken?: string;  
   sessionId?: string;  
-  host?: string;    // Default: '127.0.0.1'  
+  host?: string;    // Default: 'localhost'  
   port?: number;    // Default: 18790 for WS, 18800 for HTTP  
   path?: string;    // Default: '/pico/ws' for WS, '/api/pico/token' for HTTP  
   secure?: boolean; // Default: false (ws:// vs wss://)  
@@ -55,9 +55,8 @@ export function buildPicoClawUrl(
   const url = new URL(`${protocol}://${host}:${port}${path}`);  
     
   // Add query parameters  
-  if (config.token) {  
-    url.searchParams.append(QueryParams.TOKEN, config.token);  
-  }  
+  // Token is now passed via Sec-WebSocket-Protocol header, not query params
+
   if (config.sessionId) {  
     url.searchParams.append(QueryParams.SESSION_ID, config.sessionId);  
   }  
@@ -69,7 +68,3 @@ export function buildPicoClawUrl(
 export function buildWsUrl(config: PicoClawConfig): string {  
   return buildPicoClawUrl(config, { type: 'ws' });  
 }  
-  
-export function buildApiUrl(config: PicoClawConfig, apiPath: string = '/api/pico/token'): string {  
-  return buildPicoClawUrl(config, { type: 'http', apiPath });  
-}

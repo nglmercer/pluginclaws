@@ -4,7 +4,7 @@
 
 // --- Default Configuration Values ---
 export const DEFAULT_CONFIG = Object.freeze({
-  HOST: '127.0.0.1',
+  HOST: 'localhost',
   PORT: 18790,
   PATH: '/pico/ws',
   SECURE: false,
